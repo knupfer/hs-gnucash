@@ -10,25 +10,44 @@ import Text.XML.HXT.Core
 
 data Date = Date Int Int Int deriving (Eq, Show, Ord)
 data Cent = Cent Int deriving (Eq, Show, Ord)
-data Account = Asset | Receivable | Liability | Payable | Income | Expense | Equity | Bank
-data Transaction = Transaction Date Cent String deriving (Eq, Show, Ord)
+data AccountType = Asset | Receivable | Liability | Payable | Income | Expense | Equity | Bank deriving (Eq, Show)
+type AccountId = String
+type Account = (AccountId, AccountType)
+data Transaction = Transaction Date Cent Account deriving (Eq, Show)
 
 main :: IO ()
 main = do
 --  [src] <- getArgs
-  gnucash <- readFile "transaction.gnucash"
+  gnucash <- readFile "test.gnucash"
   let doc = readString [withParseHTML yes, withWarnings no] gnucash
-  transactions <- runX $ doc >>> getTransactions
-  print $ sort transactions
+  accounts     <- runX $ doc >>> getAccounts
+  transactions <- runX $ doc >>> getTransactions accounts
 
-getTransactions = deep $ hasName "gnc:transaction"
+  print $ take 10 transactions
+--  print $ sort transactions
+
+getAccounts = deep $ hasName "gnc:account"
+            >>> (deep (hasName "act:id" /> getText)
+                &&& deep (hasName "act:type" /> getText))
+         >>> arr toAccount
+    where toAccount (a,b) = (a, case b of
+                           "ASSET" -> Asset
+                           "RECEIVABLE" -> Receivable
+                           "LIABILITY" -> Liability
+                           "PAYABLE" -> Payable
+                           "INCOME" -> Income
+                           "EXPENSE" -> Expense
+                           "EQUITY" -> Equity
+                           "BANK" -> Bank
+                           _      -> Bank)
+
+getTransactions accounts  = deep $ hasName "gnc:transaction"
             >>> (deep (hasName "trn:date-posted" /> hasName "ts:date")
                 &&& (deep (hasName "split:value") &&& deep (hasName "split:account")))
             >>> deep getText *** deep getText *** deep getText
-            >>> arr (\(a, (b,c)) -> Transaction (date' $ T.pack a) (money b) c)
-  where money = Cent . read . takeWhile (/= '/')
-        date' = either error id . A.parseOnly (do
-              y <- A.decimal <* A.char '-'
-              m <- A.decimal <* A.char '-'
-              d <- A.decimal
-              return (Date y m d))
+            >>> arr (\(a, (b,c)) -> Transaction (toDate $ T.pack a) (toMoney b) (toAccount c))
+  where toMoney = Cent . read . takeWhile (/= '/')
+        toDate = either error id . A.parseOnly (do
+             [y,m,d] <- A.count 3 $ A.decimal <* A.anyChar
+             return (Date y m d))
+        toAccount key = maybe (error "a") ((,) key) $ lookup key accounts
