@@ -10,38 +10,53 @@ import Text.XML.HXT.Core
 
 data Date = Date Int Int Int deriving (Eq, Show, Ord)
 type Cent = Int
-data AccountType = Asset | Receivable | Liability | Payable | Income | Expense | Equity | Bank deriving (Eq, Show)
+data AccountType = Asset
+                 | Bank
+                 | Equity
+                 | Expense
+                 | Income
+                 | Liability
+                 | Payable
+                 | Receivable
+                 deriving (Eq, Show)
 type AccountId = String
 type Account = (AccountId, AccountType)
-data Transaction = Transaction Date Cent Account deriving (Eq, Show)
+data Transaction = Transaction { getDate    :: Date
+                               , getCent    :: Cent
+                               , getAccount :: Account
+                               } deriving (Eq, Show)
 
 main :: IO ()
 main = do
---  [src] <- getArgs
-  gnucash <- readFile "test.gnucash"
+  src:xs  <- getArgs
+  gnucash <- readFile src
   let doc = readString [withParseHTML yes, withWarnings no] gnucash
   accounts     <- runX $ doc >>> getAccounts
   transactions <- runX $ doc >>> getTransactions accounts
+  print . sum . map getCent . sortOn getDate
+    $ filterAccounts xs transactions
 
-  print $ sum  $ map (\(Transaction _ c _) -> c)$  sortOn (\(Transaction d _ _) -> d)
-    $ foo transactions
-    where foo = filter (\(Transaction _ _ (_,t)) -> t == Expense)
---  print $ sort transactions
+filterAccounts :: [String] -> [Transaction] -> [Transaction]
+filterAccounts xs = filter $ flip elem (map toAccountType xs) . snd . getAccount
 
+toAccountType :: String -> AccountType
+toAccountType b = case b of
+  "ASSET" -> Asset
+  "RECEIVABLE" -> Receivable
+  "LIABILITY" -> Liability
+  "PAYABLE" -> Payable
+  "INCOME" -> Income
+  "EXPENSE" -> Expense
+  "EQUITY" -> Equity
+  "BANK" -> Bank
+
+getAccounts :: IOSArrow XmlTree Account
 getAccounts = deep $ hasName "gnc:account"
             >>> (deep (hasName "act:id" /> getText)
                 &&& deep (hasName "act:type" /> getText))
-         >>> second (arr toAccount)
-    where toAccount b = case b of
-                           "ASSET" -> Asset
-                           "RECEIVABLE" -> Receivable
-                           "LIABILITY" -> Liability
-                           "PAYABLE" -> Payable
-                           "INCOME" -> Income
-                           "EXPENSE" -> Expense
-                           "EQUITY" -> Equity
-                           "BANK" -> Bank
+         >>> second (arr toAccountType)
 
+getTransactions :: [Account] -> IOSArrow XmlTree Transaction
 getTransactions accounts  = deep $ hasName "gnc:transaction"
             >>> (deep (hasName "trn:date-posted" /> hasName "ts:date")
                 &&& (deep (hasName "trn:split") >>> (deep (hasName "split:value") &&& deep (hasName "split:account"))))
