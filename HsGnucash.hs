@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+
 module Main where
 
 import qualified Data.Attoparsec.Text as A
@@ -19,7 +20,7 @@ data AccountType = Asset
                  | Liability
                  | Payable
                  | Receivable
-                 deriving (Eq, Show)
+                 deriving (Eq, Show, Ord)
 type AccountId = String
 type Account = (AccountId, AccountType)
 data Transaction = Transaction { getDay     :: Day
@@ -38,11 +39,23 @@ instance Show Transaction where
 main :: IO ()
 main = do
   src:xs  <- getArgs
+  day <- utctDay <$> getCurrentTime
   gnucash <- readFile src
   let doc = readString [withParseHTML yes, withWarnings no] gnucash
   accounts     <- runX $ doc >>> getAccounts
   transactions <- runX $ doc >>> getTransactions accounts
-  mapM_ print . sortOn getDay $ filterAccounts xs transactions
+  putStrLn "Date Money Id Account"
+  mapM_ print . bin day . sortTransaction $ filterAccounts xs transactions
+  where sortTransaction = sortOn (snd . getAccount) . sortOn getDay
+
+bin :: Day -> [Transaction] -> [Transaction]
+bin today trans = concatMap (go (getDay $ head trans))
+                $ groupBy (\x y -> snd (getAccount x) == snd (getAccount y)) trans
+   where go day (t:ts) = if today < addGregorianMonthsClip 1 day
+            then []
+            else Transaction day (sum . map getCent
+                                 $ takeWhile ((>) (addGregorianMonthsClip 1 day) . getDay)
+                                 $ dropWhile ((>) day . getDay) ts) ("NA", snd $ getAccount t) : go (addDays 1 day) (t:ts)
 
 filterAccounts :: [String] -> [Transaction] -> [Transaction]
 filterAccounts xs = filter $ flip elem (map toAccountType xs) . snd . getAccount
