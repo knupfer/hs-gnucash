@@ -1,3 +1,5 @@
+{-# LANGUAGE Arrows #-}
+
 module Main where
 
 import qualified Data.Attoparsec.Text as A
@@ -9,6 +11,7 @@ import Text.XML.HXT.Core
 import Data.Time
 import Data.Maybe
 import Data.Function
+
 
 data Date = Date Integer Int Int deriving (Eq, Ord)
 type Cent = Int
@@ -78,24 +81,37 @@ toAccountType b = case b of
   "PROFIT"     -> Profit
   _            -> Bank
 
-getAccounts :: IOSArrow XmlTree Account
-getAccounts = deep $ hasName "gnc:account"
-            >>> (deep (hasName "act:id" /> getText)
-                &&& deep (hasName "act:type" /> getText))
+getAccounts' :: IOSArrow XmlTree Account
+getAccounts' = deepName "gnc:account"
+            >>> (deepName "act:id" /> getText
+                &&& deepName "act:type" /> getText)
             >>> second (arr toAccountType)
 
 getTransactions :: [Account] -> IOSArrow XmlTree Transaction
-getTransactions accounts = deep $ hasName "gnc:transaction"
-            >>> (deep (hasName "trn:date-posted" /> hasName "ts:date")
-                &&& (deep (hasName "trn:split")
-                    >>> (deep (hasName "split:value")
-                        &&& deep (hasName "split:account"))))
-            >>> deep getText *** deep getText *** deep getText
+getTransactions accounts = deepName "gnc:transaction"
+            >>> (deepName "trn:date-posted" /> hasName "ts:date"
+                &&& (deepName "trn:split"
+                    >>> (deepName "split:value"
+                        &&& deepName "split:account")))
+            >>> deep getText
+                *** deep getText
+                *** deep getText
             >>> arr (\(a, (b,c)) -> Transaction (toDate $ T.pack a)
-                                               (toMoney b) c
-                                               (toAccount c))
+                                                (toMoney b) c
+                                                (toAccount c))
   where toMoney = read . takeWhile (/= '/')
         toDate = either error id . A.parseOnly (do
              [y, m, d] <- A.count 3 $ A.decimal <* A.anyChar
              return $ fromGregorian y (fromInteger m) (fromInteger d))
         toAccount key = fromMaybe (error "a") $ lookup key accounts
+
+getAccounts :: IOSArrow XmlTree Account
+getAccounts = proc input -> do
+            a <- deepName "gnc:account"         -< input
+            b <- deepName "act:id"   /> getText -< a
+            c <- deepName "act:type" /> getText -< a
+            d <- arr toAccountType -< c
+            returnA-< (b,d)
+
+deepName :: String -> IOSArrow XmlTree XmlTree
+deepName = deep . hasName
