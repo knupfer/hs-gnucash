@@ -1,5 +1,3 @@
-{-# LANGUAGE OverloadedStrings #-}
-
 module Main where
 
 import qualified Data.Attoparsec.Text as A
@@ -9,6 +7,8 @@ import System.Environment
 import Control.Arrow
 import Text.XML.HXT.Core
 import Data.Time
+import Data.Maybe
+import Data.Function
 
 data Date = Date Integer Int Int deriving (Eq, Ord)
 type Cent = Int
@@ -19,22 +19,24 @@ data AccountType = Asset
                  | Income
                  | Liability
                  | Payable
+                 | Profit
                  | Receivable
                  deriving (Eq, Show, Ord)
 type AccountId = String
 type Account = (AccountId, AccountType)
-data Transaction = Transaction { getDay     :: Day
-                               , getCent    :: Cent
-                               , getAccount :: Account
+data Transaction = Transaction { getDay         :: Day
+                               , getCent        :: Cent
+                               , getAccountId   :: AccountId
+                               , getAccountType :: AccountType
                                } deriving (Eq)
 
 instance Show Transaction where
-  show (Transaction d c a) = unwords [ show . (\(yyyy,mm,dd) ->
+  show (Transaction d c aI aT) = unwords [ show . (\(yyyy,mm,dd) ->
                                          fromIntegral yyyy
                                          + (fromIntegral mm
-                                           + fromIntegral dd / 30.5) / 12)
+                                           + fromIntegral dd / 30.5) / 12 :: Double)
                                          $ toGregorian d
-                                     , show c, fst a, show $ snd a]
+                                     , show c, aI, show aT]
 
 main :: IO ()
 main = do
@@ -45,20 +47,24 @@ main = do
   accounts     <- runX $ doc >>> getAccounts
   transactions <- runX $ doc >>> getTransactions accounts
   putStrLn "Date Money Id Account"
-  mapM_ print . bin day . sortTransaction $ filterAccounts xs transactions
-  where sortTransaction = sortOn (snd . getAccount) . sortOn getDay
+  mapM_ print . bin day . sortTransaction . filterAccounts xs $ getProfit transactions
+  where sortTransaction = sortOn getAccountType . sortOn getDay
+        getProfit xs = xs ++ map (\(Transaction d c aI _) -> Transaction d c aI Profit)
+                       (filterAccounts ["INCOME", "EXPENSE"] xs)
 
 bin :: Day -> [Transaction] -> [Transaction]
 bin today trans = concatMap (go (getDay $ head trans))
-                $ groupBy (\x y -> snd (getAccount x) == snd (getAccount y)) trans
-   where go day (t:ts) = if today < addGregorianMonthsClip 1 day
-            then []
-            else Transaction day (sum . map getCent
-                                 $ takeWhile ((>) (addGregorianMonthsClip 1 day) . getDay)
-                                 $ dropWhile ((>) day . getDay) ts) ("NA", snd $ getAccount t) : go (addDays 1 day) (t:ts)
+                $ groupBy ((==) `on` getAccountType) trans
+   where go day (t:ts) = if today > addGregorianMonthsClip 1 day
+            then Transaction day (negate . sum . map getCent
+                 $ takeWhile ((>) (addGregorianMonthsClip 1 day) . getDay)
+                 $ dropWhile ((>) day . getDay) ts) "NA" (getAccountType t)
+                 : go (addDays 1 day) (t:ts)
+            else []
+         go _ _ = []
 
 filterAccounts :: [String] -> [Transaction] -> [Transaction]
-filterAccounts xs = filter $ flip elem (map toAccountType xs) . snd . getAccount
+filterAccounts xs = filter $ flip elem (map toAccountType xs) . getAccountType
 
 toAccountType :: String -> AccountType
 toAccountType b = case b of
@@ -69,6 +75,7 @@ toAccountType b = case b of
   "INCOME"     -> Income
   "EXPENSE"    -> Expense
   "EQUITY"     -> Equity
+  "PROFIT"     -> Profit
   _            -> Bank
 
 getAccounts :: IOSArrow XmlTree Account
@@ -85,10 +92,10 @@ getTransactions accounts = deep $ hasName "gnc:transaction"
                         &&& deep (hasName "split:account"))))
             >>> deep getText *** deep getText *** deep getText
             >>> arr (\(a, (b,c)) -> Transaction (toDate $ T.pack a)
-                                               (toMoney b)
+                                               (toMoney b) c
                                                (toAccount c))
   where toMoney = read . takeWhile (/= '/')
         toDate = either error id . A.parseOnly (do
              [y, m, d] <- A.count 3 $ A.decimal <* A.anyChar
              return $ fromGregorian y (fromInteger m) (fromInteger d))
-        toAccount key = maybe (error "a") ((,) key) $ lookup key accounts
+        toAccount key = fromMaybe (error "a") $ lookup key accounts
