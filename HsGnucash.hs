@@ -28,7 +28,12 @@ data Transaction = Transaction { getDay     :: Day
                                } deriving (Eq)
 
 instance Show Transaction where
-  show (Transaction d c a) = unwords [show d,show c,show a]
+  show (Transaction d c a) = unwords [ show . (\(yyyy,mm,dd) ->
+                                         fromIntegral yyyy
+                                         + (fromIntegral mm
+                                           + fromIntegral dd / 30.5) / 12)
+                                         $ toGregorian d
+                                     , show c, fst a, show $ snd a]
 
 main :: IO ()
 main = do
