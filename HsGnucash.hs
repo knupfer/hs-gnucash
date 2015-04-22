@@ -2,8 +2,6 @@
 
 module Main where
 
-import qualified Data.Attoparsec.Text as A
-import qualified Data.Text as T
 import Data.List
 import System.Environment
 import Control.Arrow
@@ -11,7 +9,6 @@ import Text.XML.HXT.Core
 import Data.Time
 import Data.Maybe
 import Data.Function
-
 
 data Date = Date Integer Int Int deriving (Eq, Ord)
 type Cent = Int
@@ -44,7 +41,7 @@ instance Show Transaction where
 main :: IO ()
 main = do
   src:xs  <- getArgs
-  day <- utctDay <$> getCurrentTime
+  day     <- utctDay <$> getCurrentTime
   gnucash <- readFile src
   let doc = readString [withParseHTML yes, withWarnings no] gnucash
   accounts     <- runX $ doc >>> getAccounts
@@ -52,8 +49,8 @@ main = do
   putStrLn "Date Money Id Account"
   mapM_ print . bin day . sortTransaction . filterAccounts xs $ getProfit transactions
   where sortTransaction = sortOn getAccountType . sortOn getDay
-        getProfit xs = xs ++ map (\(Transaction d c aI _) -> Transaction d c aI Profit)
-                       (filterAccounts ["INCOME", "EXPENSE"] xs)
+        getProfit xs    = xs ++ map (\(Transaction d c aI _) -> Transaction d c aI Profit)
+                          (filterAccounts ["INCOME", "EXPENSE"] xs)
 
 bin :: Day -> [Transaction] -> [Transaction]
 bin today trans = concatMap (go (getDay $ head trans))
@@ -81,37 +78,28 @@ toAccountType b = case b of
   "PROFIT"     -> Profit
   _            -> Bank
 
-getAccounts' :: IOSArrow XmlTree Account
-getAccounts' = deepName "gnc:account"
-            >>> (deepName "act:id" /> getText
-                &&& deepName "act:type" /> getText)
-            >>> second (arr toAccountType)
-
-getTransactions :: [Account] -> IOSArrow XmlTree Transaction
-getTransactions accounts = deepName "gnc:transaction"
-            >>> (deepName "trn:date-posted" /> hasName "ts:date"
-                &&& (deepName "trn:split"
-                    >>> (deepName "split:value"
-                        &&& deepName "split:account")))
-            >>> deep getText
-                *** deep getText
-                *** deep getText
-            >>> arr (\(a, (b,c)) -> Transaction (toDate $ T.pack a)
-                                                (toMoney b) c
-                                                (toAccount c))
-  where toMoney = read . takeWhile (/= '/')
-        toDate = either error id . A.parseOnly (do
-             [y, m, d] <- A.count 3 $ A.decimal <* A.anyChar
-             return $ fromGregorian y (fromInteger m) (fromInteger d))
-        toAccount key = fromMaybe (error "a") $ lookup key accounts
-
 getAccounts :: IOSArrow XmlTree Account
 getAccounts = proc input -> do
-            a <- deepName "gnc:account"         -< input
-            b <- deepName "act:id"   /> getText -< a
-            c <- deepName "act:type" /> getText -< a
-            d <- arr toAccountType -< c
-            returnA-< (b,d)
+            a  <- deepName "gnc:account" -< input
+            i  <- deepText "act:id"      -< a
+            t  <- deepText "act:type"    -< a
+            t' <- arr toAccountType      -< t
+            returnA -<  (i, t')
 
 deepName :: String -> IOSArrow XmlTree XmlTree
 deepName = deep . hasName
+
+deepText :: String -> IOSArrow XmlTree String
+deepText s = deepName s >>> deep getText
+
+getTransactions :: [Account] -> IOSArrow XmlTree Transaction
+getTransactions accounts = proc input -> do
+       t  <- deepName "gnc:transaction" -< input
+       d  <- deepName "trn:date-posted" -< t
+       s  <- deepName "trn:split"       -< t
+       d' <- deepText "ts:date"         -< d
+       m  <- deepText "split:value"     -< s
+       a  <- deepText "split:account"   -< s
+       returnA -<  Transaction (f d') (f m) a . fromJust $ lookup a accounts
+       where f a = fst . head $ reads a
+
