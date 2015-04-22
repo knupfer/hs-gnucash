@@ -40,24 +40,25 @@ instance Show Transaction where
 
 main :: IO ()
 main = do
-  src:xs  <- getArgs
-  day     <- utctDay <$> getCurrentTime
-  gnucash <- readFile src
-  let doc = readString [withParseHTML yes, withWarnings no] gnucash
+  src:s:xs <- getArgs
+  today    <- utctDay <$> getCurrentTime
+  gnucash  <- readFile src
+  let size = read s
+  let doc  = readString [withParseHTML yes, withWarnings no] gnucash
   accounts     <- runX $ doc >>> getAccounts
   transactions <- runX $ doc >>> getTransactions accounts
   putStrLn "Date Money Id Account"
-  mapM_ print . bin day . sortTransaction . filterAccounts xs $ getProfit transactions
+  mapM_ print . bin size today . sortTransaction . filterAccounts xs $ getProfit transactions
   where sortTransaction = sortOn getAccountType . sortOn getDay
         getProfit xs    = xs ++ map (\(Transaction d c aI _) -> Transaction d c aI Profit)
                           (filterAccounts ["INCOME", "EXPENSE"] xs)
 
-bin :: Day -> [Transaction] -> [Transaction]
-bin today trans = concatMap (go (getDay $ head trans))
+bin :: Integer -> Day -> [Transaction] -> [Transaction]
+bin s today trans = concatMap (go (getDay $ head trans))
                 $ groupBy ((==) `on` getAccountType) trans
-   where go day (t:ts) = if today > addGregorianMonthsClip 1 day
+   where go day (t:ts) = if today > addDays s day
             then Transaction day (negate . sum . map getCent
-                 $ takeWhile ((>) (addGregorianMonthsClip 1 day) . getDay)
+                 $ takeWhile ((>) (addDays s day) . getDay)
                  $ dropWhile ((>) day . getDay) ts) "NA" (getAccountType t)
                  : go (addDays 1 day) (t:ts)
             else []
