@@ -36,15 +36,19 @@ main = do
   src:s:xs <- getArgs
   today    <- utctDay <$> getCurrentTime
   gnucash  <- readFile src
-  let size = read s
+  let size = read s :: Integer
   [(accounts, transactions)] <- runX $ parseDoc gnucash
-  putStr . concatMap toCsv
-         . filterAccounts xs
+  putStr . toCsv
          . bin size today
+         . (\x -> getProfit x ++ x)
+         . filterAccounts xs
+         . concatMap toSingleBook
          $ transactions
 
 getProfit :: [Transaction] -> [Transaction]
-getProfit ts = filterAccounts ["INCOME","EXPENSE"] $ concatMap toSingleBook ts
+getProfit ts = map (\(Transaction d [Split c i _]) -> Transaction d [Split c i Profit])
+             . filterAccounts ["INCOME","EXPENSE"]
+             $ concatMap toSingleBook ts
 
 parseDoc ::  String -> IOSArrow XmlTree ([Account],[Transaction])
 parseDoc doc = readString [withParseHTML yes, withWarnings no] doc
@@ -53,27 +57,39 @@ parseDoc doc = readString [withParseHTML yes, withWarnings no] doc
 toSingleBook :: Transaction -> [Transaction]
 toSingleBook (Transaction day ss) = map (Transaction day . flip (:) []) ss
 
-toCsv :: Transaction -> String
-toCsv (Transaction day (s:ss)) = unlines $ f (show day) s:map (f "          ") ss
-        where f maybeDay x = intercalate "\t" [ maybeDay
-                                       , show (getCent x)
-                                       , show (getAccountType x)
-                                       , show (getAccountId x)]
-toCsv _ = ""
+toCsv :: [Transaction] -> String
+toCsv = (++) "Date\tMoney\tAccount\tId\n". concatMap
+       (\(Transaction day (s:ss)) -> unlines $ f (show $ toFloatDate day) s
+       : map (f "          ") ss)
+       where f maybeDay x = intercalate "\t" [ maybeDay
+                                             , show (getCent x)
+                                             , show (getAccountType x)
+                                             , show (getAccountId x) ]
+
+toFloatDate :: Day -> Double
+toFloatDate = f . toGregorian
+  where f (y, m, d) = fromIntegral y
+                      + ( fromIntegral (m-1)
+                        + fromIntegral d / 30
+                        ) / 12
 
 toLedger :: Transaction -> String
 toLedger _ = undefined
 
 bin :: Integer -> Day -> [Transaction] -> [Transaction]
-bin s today trans = concatMap (go (getDay $ head trans))
-    $ groupBy ((==) `on` (getAccountType . head . getSplits)) . sortOn getDay . sortOn (getAccountType . head . getSplits) $ concatMap toSingleBook trans
-   where go day (t:ts) = if today > addDays s day
-            then Transaction day [Split (negate . sum . map (getCent . head . getSplits)
-                 $ takeWhile ((>) (addDays s day) . getDay)
-                 $ dropWhile ((>) day . getDay) (t:ts)) "na" (getAccountType. head $ getSplits t)]
-                 : go (addDays 1 day) (t:ts)
-            else []
-         go _ _ = []
+bin s today trans = concatMap (go (getDay $ head trans'))
+    $ groupBy ((==) `on` (getAccountType . head . getSplits)) trans'
+    where trans' = sortOn (getAccountType . head . getSplits &&& getDay)
+                 $ concatMap toSingleBook trans
+          go day (t:ts) = if today > addDays s day
+             then Transaction day [ Split ( negate . sum
+                                         . map (getCent . head . getSplits)
+                                         . takeWhile ((>) (addDays s day) . getDay)
+                                         $ dropWhile ((>) day . getDay) (t:ts))
+                                   "NA" (getAccountType . head $ getSplits t)]
+                  : go (addDays 1 day) (t:ts)
+             else []
+          go _ _ = []
 
 filterAccounts :: [String] -> [Transaction] -> [Transaction]
 filterAccounts xs = filter $ any ( flip elem (map toAccountType xs)
