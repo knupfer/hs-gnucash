@@ -36,19 +36,22 @@ main = do
   src:s:xs <- getArgs
   today    <- utctDay <$> getCurrentTime
   gnucash  <- readFile src
---  let size = read s
+  let size = read s
   [(accounts, transactions)] <- runX $ parseDoc gnucash
---  mapM_ print . bin size today . sortTransaction . filterAccounts xs $ getProfit transactions
-  putStr . concatMap toCsv . sortTransaction . filterAccounts xs $ transactions
-  where sortTransaction = sortOn getDay
-        -- getProfit xs    = xs ++ map (\(Transaction d c aI _) -> Transaction d c aI Profit)
-        --                   (filterAccounts ["INCOME", "EXPENSE"] xs)
+  putStr . concatMap toCsv
+         . filterAccounts xs
+         . bin size today
+         $ transactions
 
-
+getProfit :: [Transaction] -> [Transaction]
+getProfit ts = filterAccounts ["INCOME","EXPENSE"] $ concatMap toSingleBook ts
 
 parseDoc ::  String -> IOSArrow XmlTree ([Account],[Transaction])
 parseDoc doc = readString [withParseHTML yes, withWarnings no] doc
          >>> listA getAccounts &&& listA (getTransactions $< listA getAccounts)
+
+toSingleBook :: Transaction -> [Transaction]
+toSingleBook (Transaction day ss) = map (Transaction day . flip (:) []) ss
 
 toCsv :: Transaction -> String
 toCsv (Transaction day (s:ss)) = unlines $ f (show day) s:map (f "          ") ss
@@ -59,25 +62,23 @@ toCsv (Transaction day (s:ss)) = unlines $ f (show day) s:map (f "          ") s
 toCsv _ = ""
 
 toLedger :: Transaction -> String
-toLedger (Transaction day (s:ss)) = unlines $ f (show day) s:map (f "          ") ss
-        where f maybeDay x = intercalate "\t" [ maybeDay
-                                       , show (getCent x)
-                                       , show (getAccountType x)
-                                       , show (getAccountId x)]
+toLedger _ = undefined
 
--- bin :: Integer -> Day -> [Transaction] -> [Transaction]
--- bin s today trans = concatMap (go (getDay $ head trans))
---                 $ groupBy ((==) `on` getAccountType) trans
---    where go day (t:ts) = if today > addDays s day
---             then Transaction day (negate . sum . map getCent
---                  $ takeWhile ((>) (addDays s day) . getDay)
---                  $ dropWhile ((>) day . getDay) ts) "NA" (getAccountType t)
---                  : go (addDays 1 day) (t:ts)
---             else []
---          go _ _ = []
+bin :: Integer -> Day -> [Transaction] -> [Transaction]
+bin s today trans = concatMap (go (getDay $ head trans))
+    $ groupBy ((==) `on` (getAccountType . head . getSplits)) . sortOn getDay . sortOn (getAccountType . head . getSplits) $ concatMap toSingleBook trans
+   where go day (t:ts) = if today > addDays s day
+            then Transaction day [Split (negate . sum . map (getCent . head . getSplits)
+                 $ takeWhile ((>) (addDays s day) . getDay)
+                 $ dropWhile ((>) day . getDay) (t:ts)) "na" (getAccountType. head $ getSplits t)]
+                 : go (addDays 1 day) (t:ts)
+            else []
+         go _ _ = []
 
 filterAccounts :: [String] -> [Transaction] -> [Transaction]
-filterAccounts xs = filter $ any (flip elem (map toAccountType xs) . getAccountType) . getSplits
+filterAccounts xs = filter $ any ( flip elem (map toAccountType xs)
+                                 . getAccountType)
+                           . getSplits
 
 toAccountType :: String -> AccountType
 toAccountType b = case b of
@@ -107,14 +108,13 @@ deepText s = deepName s >>> deep getText
 
 getTransactions :: [Account] -> IOSArrow XmlTree Transaction
 getTransactions accounts = proc input -> do
-       t  <- deepName "gnc:transaction" -< input
-       d  <- deepName "trn:date-posted" -< t
-       s  <- deepName "trn:splits"      -< t
-       d' <- deepText "ts:date"         -< d
-       m  <- listA $ deepText "split:value"   -< s
-       a  <- listA $ deepText "split:account" -< s
-       xs <- arr (uncurry zip) -< (m, a)
-       xs'<- arr (map (\(m, a) -> Split (f m) a (g a))) -< xs
-       returnA -< Transaction (f d') xs'
+       t  <- deepName "gnc:transaction"       -< input
+       d  <- deepName "trn:date-posted"       -< t
+       s  <- deepName "trn:splits"            -< t
+       d' <- deepText "ts:date"               -< d
+       ms <- listA $ deepText "split:value"   -< s
+       as <- listA $ deepText "split:account" -< s
+       returnA -< Transaction (f d') (h ms as)
        where f x = fst . head $ reads x
              g x = fromJust $ lookup x accounts
+             h xs ys = map (\(x,y) -> Split (f x) y (g y)) $ zip xs ys
