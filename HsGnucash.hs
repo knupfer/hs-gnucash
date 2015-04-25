@@ -14,6 +14,7 @@ import qualified Data.Map as M
 data Cent = Cent Integer deriving (Eq)
 instance Show Cent where
   show (Cent n) = show (n `div` 100) ++ "." ++ show (n `mod` 100)
+                 ++ if 0 == n `mod` 10 then "0" else ""
 
 data Date = Date Integer Int Int deriving (Eq, Ord)
 data AccountType = Asset
