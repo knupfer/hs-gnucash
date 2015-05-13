@@ -1,4 +1,5 @@
 {-# LANGUAGE Arrows #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 module Main where
 
@@ -6,6 +7,9 @@ import Data.List
 import System.Environment
 import Control.Arrow
 import Text.XML.HXT.Core
+import Text.XML hiding (readFile)
+import Text.XML.Cursor
+import qualified Data.Text as T
 import Data.Time
 import Data.Maybe
 import Data.Function
@@ -147,6 +151,13 @@ getAccounts = (>. ((\x -> M.map (f x) x) . M.fromList)) $ proc input -> do
             where f ls (x,y,z) = Account x y $ do
                                          (x',y',z') <- M.lookup z ls
                                          return $ f ls (x',y',z')
+
+acc c = c $/ element "account" >=> parseAccount''
+  where parseAccount'' c' = let get n = mconcat $ c' $// element n &/ content
+                            in [Account (T.unpack $ get "name")
+                                        (toAccountType . T.unpack $ get "type")
+                                        Nothing -- (get "parent")
+                               ]
 
 deepName :: String -> IOSArrow XmlTree XmlTree
 deepName = deep . hasName
