@@ -6,8 +6,9 @@ module Main where
 import Data.List
 import System.Environment
 import Control.Arrow
-import Text.XML.HXT.Core
+import Filesystem.Path.CurrentOS (decodeString)
 import Text.XML hiding (readFile)
+import qualified Text.XML as X (readFile)
 import Text.XML.Cursor
 import qualified Data.Text as T
 import Data.Time
@@ -49,20 +50,20 @@ data Transaction = Transaction { getDay             :: Day
 main :: IO ()
 main = do
   src:t:s:xs <- getArgs
-  today    <- utctDay <$> getCurrentTime
-  gnucash  <- readFile src
-  let size = read s
-  let times = read t
-  [transactions] <- runX $ parseDoc gnucash
-  putStr . toCsv
-         . map (\(Transaction d _ [Split (Cent c) a])
-               -> Transaction d "NA" [Split (Cent $ -c*size) a])
-         . foldl1 (.) (replicate times (bin size))
-         . (\x -> getProfit x ++ x)
-         . filterAccounts xs
-         . noFuture today
-         . concatMap toSingleBook
-         $ transactions
+  today      <- utctDay      <$> getCurrentTime
+  cursor     <- fromDocument <$> X.readFile def (decodeString src)
+  putStr      $ output today (read t) (read s) cursor xs
+
+output :: Day -> Int -> Integer -> Cursor -> [String] -> String
+output today times size cursor xs = toCsv
+  . map (\(Transaction d _ [Split (Cent c) a])
+        -> Transaction d "NA" [Split (Cent $ -c*size) a])
+  . foldl1 (.) (replicate times (bin size))
+  . (\x -> getProfit x ++ x)
+  . filterAccounts xs
+  . noFuture today
+  . concatMap toSingleBook
+  $ getTransactions' cursor (getAccounts' cursor)
 
 noFuture :: Day -> [Transaction] -> [Transaction]
 noFuture d = filter ((>=) d . getDay)
@@ -71,10 +72,6 @@ getProfit :: [Transaction] -> [Transaction]
 getProfit ts = map (\(Transaction d _ [Split c _]) -> Transaction d "NA" [Split c (Account "NA" Profit Nothing)])
              . filterAccounts ["INCOME","EXPENSE"]
              $ concatMap toSingleBook ts
-
-parseDoc ::  String -> IOSArrow XmlTree [Transaction]
-parseDoc doc = readString [withParseHTML yes, withWarnings no] doc
-         >>> listA (getTransactions $< getAccounts)
 
 toSingleBook :: Transaction -> [Transaction]
 toSingleBook (Transaction day n ss) = map (Transaction day n . flip (:) []) ss
@@ -105,7 +102,7 @@ toLedger (Transaction d n ss) = unlines $ [show d ++ " " ++ n]
                                     ' ' ++ show x
 
 bin :: Integer -> [Transaction] -> [Transaction]
-bin s trans = concatMap (\x -> filter ((>) (lastDay x) . addDays (s `div` 2) . getDay) $ go (firstDay x, lastDay x) x)
+bin s trans = concatMap (\x -> filter ((>) (lastDay x) . addDays (s `div` 4) . getDay) $ go (firstDay x, lastDay x) x)
     $ groupBy ((==) `on` (getType . getAccount . head . getSplits)) trans'
     where trans' = sortOn (getType . getAccount . head . getSplits &&& getDay)
                  $ concatMap toSingleBook trans
@@ -139,42 +136,33 @@ toAccountType b = case b of
   "PROFIT"     -> Profit
   _            -> Bank
 
-getAccounts :: IOSArrow XmlTree AccountM
-getAccounts = (>. ((\x -> M.map (f x) x) . M.fromList)) $ proc input -> do
-            a  <- deepName "gnc:account" -< input
-            i  <- deepText "act:id"      -< a
-            t  <- deepText "act:type"    -< a
-            p  <- deepText "act:parent"  -< a
-            n  <- deepText "act:name"    -< a
-            t' <- arr toAccountType      -< t
-            returnA                      -< (i, (n, t', p))
-            where f ls (x,y,z) = Account x y $ do
-                                         (x',y',z') <- M.lookup z ls
-                                         return $ f ls (x',y',z')
+getAccounts' :: Cursor -> M.Map String Account
+getAccounts' c = ((\x -> M.map (f x) x) . M.fromList) $ take 203 $
+                 filter (not .null .fst) $ c $// laxElement "account" >=> parseAccount''
+  where f ls (x,y,z) = Account x y $ do
+                         (x',y',z') <- M.lookup z ls
+                         return $ f ls (x',y',z')
 
-acc c = c $/ element "account" >=> parseAccount''
-  where parseAccount'' c' = let get n = mconcat $ c' $// element n &/ content
-                            in [Account (T.unpack $ get "name")
-                                        (toAccountType . T.unpack $ get "type")
-                                        Nothing -- (get "parent")
-                               ]
+parseAccount'' :: Cursor -> [(String, (String, AccountType, String))]
+parseAccount'' c' = [(id' , (name', type', parent'))]
+  where get n     = mconcat $ c' $/ laxElement n &/ content
+        id'       = T.unpack $ get "id"
+        name'     = T.unpack $ get "name"
+        type'     = toAccountType . T.unpack $ get "type"
+        parent'   = T.unpack $ get "parent"
 
-deepName :: String -> IOSArrow XmlTree XmlTree
-deepName = deep . hasName
+getTransactions' :: Cursor -> AccountM -> [Transaction]
+getTransactions' c accounts = c $// laxElement "transaction" >=> parseTransaction'' accounts
 
-deepText :: String -> IOSArrow XmlTree String
-deepText s = deepName s >>> deep getText
-
-getTransactions :: AccountM -> IOSArrow XmlTree Transaction
-getTransactions accounts = proc input -> do
-       t  <- deepName "gnc:transaction"       -< input
-       d  <- deepName "trn:date-posted"       -< t
-       s  <- deepName "trn:splits"            -< t
-       n  <- deepText "trn:description"       -< t
-       d' <- deepText "ts:date"               -< d
-       ms <- listA $ deepText "split:value"   -< s
-       as <- listA $ deepText "split:account" -< s
-       returnA -< Transaction (f d') n (h ms as)
-       where f x = fst . head $ reads x
-             g x = fromJust $ M.lookup x accounts
-             h xs ys = map (\(x,y) -> Split (Cent $ f x) (g y)) $ zip xs ys
+parseTransaction'' :: M.Map String Account -> Cursor -> [Transaction]
+parseTransaction'' accounts c' = [Transaction (fst . head . reads $ date) (T.unpack desc) h]
+  where get n     = mconcat $ c' $/ laxElement n &/ content
+        date = T.unpack . mconcat $ c' $/ laxElement "date-posted" &/ laxElement "date" &/ content
+        desc = get "description"
+        splits = c' $/ laxElement "splits" &/ laxElement "split" >=> split
+        split c'' = [(T.unpack . head . val &&& T.unpack . head . acc) c'']
+        val i = i $/ laxElement "value"   &/ content
+        acc i = i $/ laxElement "account" &/ content
+        f x = fst . head $ reads x
+        g x = fromJust $ M.lookup x accounts
+        h  = map (\(x,y) -> Split (Cent $ f x) (g y)) splits
