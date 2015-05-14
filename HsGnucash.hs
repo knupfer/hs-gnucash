@@ -32,8 +32,8 @@ data AccountType = Asset
                  | Receivable
                  deriving (Eq, Show, Ord)
 
-type AccountId = String
-data Account = Account { getAccountName :: String
+type AccountId = T.Text
+data Account = Account { getAccountName :: T.Text
                        , getType        :: AccountType
                        , getParent      :: Maybe Account
                        } deriving (Show, Eq)
@@ -42,7 +42,7 @@ data Split = Split { getCent    :: Cent
                    , getAccount :: Account
                    } deriving (Show, Eq)
 data Transaction = Transaction { getDay             :: Day
-                               , getTransactionName :: String
+                               , getTransactionName :: T.Text
                                , getSplits          :: [Split]
                                } deriving (Eq, Show)
 
@@ -56,7 +56,7 @@ main = do
 output :: Day -> Int -> Integer -> Cursor -> [String] -> String
 output today times size cursor xs = toCsv
   . map (\(Transaction d _ [Split (Cent c) a])
-        -> Transaction d "NA" [Split (Cent $ -c*size) a])
+    -> Transaction d "NA" [Split (Cent $ -c*size) a])
   . foldl1 (.) (replicate times (bin size))
   . (\x -> getProfit x ++ x)
   . filterAccounts xs
@@ -81,9 +81,9 @@ toCsv = concatMap
        : map (f n "          ") ss)
        where f n maybeDay x = intercalate "\t" [ maybeDay
                                                , show (getCent x)
-                                               , n
+                                               , T.unpack n
                                                , show (getType $ getAccount x)
-                                               , getAccountName $ getAccount x ]
+                                               , T.unpack . getAccountName $ getAccount x ]
 
 toFloatDate :: Day -> Double
 toFloatDate = f . toGregorian
@@ -93,9 +93,9 @@ toFloatDate = f . toGregorian
                         ) / 12
 
 toLedger :: Transaction -> String
-toLedger (Transaction d n ss) = unlines $ [show d ++ " " ++ n]
+toLedger (Transaction d n ss) = unlines $ [show d ++ " " ++ T.unpack n]
              ++ map printSplit ss ++ [""]
-  where getAH x = getAccountName x : maybe [] getAH (getParent x)
+  where getAH x = T.unpack (getAccountName x) : maybe [] getAH (getParent x)
         printSplit (Split x y) = let t = "  " ++ intercalate ":" (getAH y) ++ "  "
                                  in t ++ replicate (80 - length (t ++ show x))
                                     ' ' ++ show x
@@ -135,33 +135,33 @@ toAccountType b = case b of
   "PROFIT"     -> Profit
   _            -> Bank
 
-getAccounts' :: Cursor -> M.Map String Account
-getAccounts' c = ((\x -> M.map (f x) x) . M.fromList) $ take 203 $
-                 filter (not .null .fst) $ c $// laxElement "account" >=> parseAccount''
+getAccounts' :: Cursor -> M.Map T.Text Account
+getAccounts' c = ((\x -> M.map (f x) x) . M.fromList) $
+                 filter (not . T.null .fst) $ c $// laxElement "account" >=> parseAccount''
   where f ls (x,y,z) = Account x y $ do
                          (x',y',z') <- M.lookup z ls
                          return $ f ls (x',y',z')
 
-parseAccount'' :: Cursor -> [(String, (String, AccountType, String))]
+parseAccount'' :: Cursor -> [(T.Text, (T.Text, AccountType, T.Text))]
 parseAccount'' c' = [(id' , (name', type', parent'))]
   where get n     = mconcat $ c' $/ laxElement n &/ content
-        id'       = T.unpack $ get "id"
-        name'     = T.unpack $ get "name"
+        id'       = get "id"
+        name'     = get "name"
         type'     = toAccountType . T.unpack $ get "type"
-        parent'   = T.unpack $ get "parent"
+        parent'   = get "parent"
 
 getTransactions' :: Cursor -> AccountM -> [Transaction]
 getTransactions' c accounts = c $// laxElement "transaction" >=> parseTransaction'' accounts
 
-parseTransaction'' :: M.Map String Account -> Cursor -> [Transaction]
-parseTransaction'' accounts c' = [Transaction (fst . head . reads $ date) (T.unpack desc) h]
+parseTransaction'' :: M.Map T.Text Account -> Cursor -> [Transaction]
+parseTransaction'' accounts c' = [Transaction (fst . head . reads $ date) desc h]
   where get n     = mconcat $ c' $/ laxElement n &/ content
-        date = T.unpack . mconcat $ c' $/ laxElement "date-posted" &/ laxElement "date" &/ content
-        desc = get "description"
-        splits = c' $/ laxElement "splits" &/ laxElement "split" >=> split
-        split c'' = [(T.unpack . head . val &&& T.unpack . head . acc) c'']
-        val i = i $/ laxElement "value"   &/ content
-        acc i = i $/ laxElement "account" &/ content
-        f x = fst . head $ reads x
-        g x = fromJust $ M.lookup x accounts
-        h  = map (\(x,y) -> Split (Cent $ f x) (g y)) splits
+        date      = T.unpack . mconcat $ c' $/ laxElement "date-posted" &/ laxElement "date" &/ content
+        desc      = get "description"
+        splits    = c' $/ laxElement "splits" &/ laxElement "split" >=> split
+        split c'' = [(head . val &&& head . acc) c'']
+        val i     = i $/ laxElement "value"   &/ content
+        acc i     = i $/ laxElement "account" &/ content
+        f x       = fst . head . reads $ T.unpack x
+        g x       = fromJust $ M.lookup x accounts
+        h         = map (\(x,y) -> Split (Cent $ f x) (g y)) splits
