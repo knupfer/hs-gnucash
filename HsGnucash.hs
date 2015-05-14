@@ -1,20 +1,19 @@
-{-# LANGUAGE Arrows #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module Main where
 
-import Data.List
-import System.Environment
-import Control.Arrow
-import Filesystem.Path.CurrentOS (decodeString)
-import Text.XML hiding (readFile)
-import qualified Text.XML as X (readFile)
-import Text.XML.Cursor
-import qualified Data.Text as T
-import Data.Time
-import Data.Maybe
-import Data.Function
-import qualified Data.Map as M
+import           Control.Arrow
+import           Data.Function
+import           Data.List
+import qualified Data.Map                    as M
+import           Data.Maybe
+import qualified Data.Text                   as T
+import           Data.Time
+import           Filesystem.Path.CurrentOS   (decodeString)
+import           System.Environment
+import           Text.XML                    hiding (readFile)
+import qualified Text.XML                    as X (readFile)
+import           Text.XML.Cursor
 
 data Cent = Cent Integer deriving (Eq)
 instance Show Cent where
