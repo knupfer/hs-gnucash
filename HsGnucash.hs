@@ -3,6 +3,7 @@
 module Main where
 
 import           Control.Arrow
+import           Control.Monad
 import           Data.Function
 import           Data.List
 import qualified Data.Map                  as M
@@ -56,21 +57,44 @@ data Transaction = Transaction { getDay             :: Day
 
 main :: IO ()
 main = do
-  src:t:s:xs <- getArgs
-  today      <- utctDay      <$> getCurrentTime
-  cursor     <- fromDocument <$> X.readFile def (decodeString src)
-  putStr      $ output today (read t) (read s) cursor xs
+  file:args <- getArgs
+  today     <- utctDay      <$> getCurrentTime
+  cursor    <- fromDocument <$> X.readFile def (decodeString file)
+  putStr     $ output (parseArgs today args) cursor
 
-output :: Day -> Int -> Integer -> Cursor -> [String] -> String
-output today times size cursor xs = toCsv
-  . map (\(Transaction d _ [Split (Cent c) a])
-         -> Transaction d "NA" [Split (Cent $ -c*size) a])
-  . foldl1 (.) (replicate times (bin size))
-  . (\x -> getProfit x ++ x)
-  . filterAccounts (map T.pack xs)
-  . noFuture today
-  . concatMap toSingleBook
-  $ getTransactions cursor (getAccounts cursor)
+parseArgs :: Day -> [String] -> [Transaction] -> String
+parseArgs _ [] = const "err"
+parseArgs day (x:xs) = fromMaybe (parseArgs day []) . join $ lookup x
+  [ ("bin", do
+            times <- headMay xs        >>= readMay
+            size  <- headMay (tail xs) >>= readMay
+            let accs = drop 2 xs
+            return $ toCsv
+                   . foldl1 (.) (replicate times $ bin size)
+                   . map (\(Transaction d _ [Split (Cent c) a])
+                          -> Transaction d "NA" [Split (Cent $ -c*size) a])
+                   . filterAccounts (map T.pack accs)
+                   . (\t -> getProfit t ++ t)
+                   . noFuture day
+                   . concatMap toSingleBook)
+  , ("integrate", return $ toCsv
+                         . map (\(Transaction d _ [Split (Cent c) a])
+                                  -> Transaction d "NA" [Split (Cent $ negate c) a])
+                         . integrate
+                         . filterAccounts (map T.pack xs)
+                         . (\t -> getProfit t ++ t)
+                         . noFuture day
+                         . concatMap toSingleBook)]
+
+output :: ([Transaction] -> String) -> Cursor -> String
+output fun cursor = fun  $ getTransactions cursor (getAccounts cursor)
+
+integrate :: [Transaction] -> [Transaction]
+integrate xs = concatMap go $ groupBy ((==) `on` theirType) sortedTrans
+  where sortedTrans   = sortOn (theirType &&& getDay) $ concatMap toSingleBook xs
+        go ys  = scanl1 mup ys :: [Transaction]
+        mup (Transaction _ _ (Split (Cent c) _ :_)) (Transaction d n (Split (Cent c') a:_)) =
+             Transaction d n [Split (Cent $ c + c') a]
 
 noFuture :: Day -> [Transaction] -> [Transaction]
 noFuture d = filter ((>=) d . getDay)
