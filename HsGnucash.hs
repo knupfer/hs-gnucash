@@ -110,7 +110,7 @@ toLedger (Transaction d n ss) = T.unlines $
                                  in T.justifyLeft (80 - length (show x)) ' ' t <> T.pack (show x)
 
 bin :: Integer -> [Transaction] -> [Transaction]
-bin s trans = concat . catMaybes $ map (\x -> do
+bin s trans = concat $ mapMaybe (\x -> do
   l <- boundaryDay lastMay x
   h <- boundaryDay headMay x
   return . filter ((>) l . addDays (s `div` 4) . getDay) $ bin' s (h, l) x)
