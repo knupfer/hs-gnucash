@@ -11,15 +11,22 @@ import           Data.Monoid
 import qualified Data.Text                 as T
 import           Data.Time
 import           Filesystem.Path.CurrentOS (decodeString)
+import           Safe
 import           System.Environment
 import           Text.XML                  hiding (readFile)
 import qualified Text.XML                  as X (readFile)
 import           Text.XML.Cursor
 
+type AccountName = T.Text
+type ParentName = T.Text
+type AccountM = M.Map AccountId Account
+type AccountId = T.Text
+
 data Cent = Cent Integer deriving (Eq)
+
 instance Show Cent where
   show (Cent n) = show (n `div` 100) ++ "." ++ show (n `mod` 100)
-                 ++ if 0 == n `mod` 10 then "0" else ""
+                 ++ if n `mod` 10 == 0 then "0" else ""
 
 data Date = Date Integer Int Int deriving (Eq, Ord)
 data AccountType = Asset
@@ -33,15 +40,11 @@ data AccountType = Asset
                  | Receivable
                  deriving (Eq, Show, Ord)
 
-type AccountName = T.Text
-type ParentName = T.Text
-type AccountId = T.Text
 data Account = Account { getAccountName :: AccountName
                        , getType        :: AccountType
                        , getParent      :: Maybe Account
                        } deriving (Show, Eq)
 
-type AccountM = M.Map AccountId Account
 data Split = Split { getCent    :: Cent
                    , getAccount :: Account
                    } deriving (Show, Eq)
@@ -100,34 +103,37 @@ toFloatDate = f . toGregorian
                         ) / 12
 
 toLedger :: Transaction -> T.Text
-toLedger (Transaction d n ss) = T.unlines $ [T.pack (show d) <> " " <> n] <> map printSplit ss <> [""]
+toLedger (Transaction d n ss) = T.unlines $
+         [T.pack (show d) <> " " <> n] <> map printSplit ss <> [""]
   where getAH x = getAccountName x : maybe [] getAH (getParent x)
         printSplit (Split x y) = let t = "  " <> T.intercalate ":" (getAH y) <> "  "
-                                 in t <> T.pack (replicate (80 - T.length (t <> T.pack (show x))) ' ')
-                                      <> T.pack (show x)
+                                 in T.justifyLeft (80 - length (show x)) ' ' t <> T.pack (show x)
 
 bin :: Integer -> [Transaction] -> [Transaction]
-bin s trans = concatMap (\x -> filter ((>) (boundaryDay last x) . addDays (s `div` 4) . getDay)
-                               $ bin' s (boundaryDay head x, boundaryDay last x) x)
-                        $ groupBy ((==) `on` theirType) sortedTrans
-     where sortedTrans   = sortOn (theirType &&& getDay) $ concatMap toSingleBook trans
-           boundaryDay f = getDay . f . sortOn getDay
+bin s trans = concat . catMaybes $ map (\x -> do
+  l <- boundaryDay lastMay x
+  h <- boundaryDay headMay x
+  return . filter ((>) l . addDays (s `div` 4) . getDay) $ bin' s (h, l) x)
+    $ groupBy ((==) `on` theirType) sortedTrans
+  where sortedTrans   = sortOn (theirType &&& getDay) $ concatMap toSingleBook trans
+        boundaryDay f = fmap getDay .  f . sortOn getDay
 
-theirType :: Transaction -> AccountType
-theirType = getType . getAccount . head . getSplits
+theirType :: Transaction -> Maybe AccountType
+theirType = fmap (getType . getAccount) . headMay . getSplits
 
 bin' :: Integer -> (Day, Day) -> [Transaction] -> [Transaction]
 bin' s (fDay, lDay) ts = Transaction fDay "NA"
-  [ Split (Cent . flip div (minimum [s, 1+diffDays lDay fDay]) . sum
-          . map ((\(Cent x) -> x) . getCent . head . getSplits)
-          . takeWhile ((>) (addDays s fDay) . getDay)
-          $ dropWhile ((>) fDay . getDay) ts
-          )
-  $ Account "NA" (theirType $ head ts) Nothing
-  ] : if fDay < lDay
-         then bin' s (addDays 1 fDay, lDay) ts
-         else []
-bin' _ _ _ = []
+  (catMaybes [ do a <- headMay ts
+                  b <- theirType a
+                  return . split $ Account "NA" b Nothing
+  ]) : if fDay < lDay
+          then bin' s (addDays 1 fDay, lDay) ts
+          else []
+  where split = Split ( Cent . flip div (minimum [s, 1+diffDays lDay fDay]) . sum
+                      . mapMaybe (fmap ((\(Cent x) -> x) . getCent) . headMay . getSplits)
+                      . takeWhile ((>) (addDays s fDay) . getDay)
+                      $ dropWhile ((>) fDay . getDay) ts
+                      )
 
 filterAccounts :: [T.Text] -> [Transaction] -> [Transaction]
 filterAccounts xs = filter $ any ( flip elem (map toAccountType xs)
@@ -166,13 +172,19 @@ getTransactions :: Cursor -> AccountM -> [Transaction]
 getTransactions c accounts = c $// laxElement "transaction" >=> parseTransaction accounts
 
 parseTransaction :: AccountM -> Cursor -> [Transaction]
-parseTransaction accounts c = [Transaction (fst . head . reads $ date) desc h]
-  where date     = T.unpack . mconcat $ c $/ laxElement "date-posted" &/ laxElement "date" &/ content
-        desc     = mconcat $ c $/ laxElement "description" &/ content
-        splits   = c $/ laxElement "splits"  &/ laxElement "split" >=> split
-        val i    = i $/ laxElement "value"   &/ content
-        acc i    = i $/ laxElement "account" &/ content
-        split c' = [(head . val &&& head . acc) c']
-        f x      = fst . head . reads $ T.unpack x
-        g x      = fromJust $ M.lookup x accounts
-        h        = map (\(x,y) -> Split (Cent $ f x) (g y)) splits
+parseTransaction accounts c = catMaybes [do a <- headMay . reads $ T.unpack date
+                                            return $ Transaction (fst a) desc h]
+  where splits   =           c $/ laxElement "splits"      &/ laxElement "split" >=> split
+        date     = mconcat $ c $/ laxElement "date-posted" &/ getElement "date"
+        desc     = mconcat $ c $/ getElement "description"
+        val i    =           i $/ getElement "value"
+        acc i    =           i $/ getElement "account"
+        split c' = [(headMay . val &&& headMay . acc) c']
+        f x      = fmap (Cent . fst) . headMay . reads $ T.unpack x
+        g x      = M.lookup x accounts
+        h        = mapMaybe (\(x,y) -> do
+                              x' <- x >>= f
+                              y' <- y >>= g
+                              return $ Split x' y'
+                            ) splits
+        getElement n = laxElement n &/ content
