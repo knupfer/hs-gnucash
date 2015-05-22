@@ -44,7 +44,7 @@ data AccountType = Asset
 data Account = Account { getAccountName :: AccountName
                        , getType        :: AccountType
                        , getParent      :: Maybe Account
-                       } deriving (Show, Eq)
+                       } deriving (Show, Eq, Ord)
 
 data Split = Split { getCent    :: Cent
                    , getAccount :: Account
@@ -65,18 +65,18 @@ main = do
 parseArgs :: Day -> [String] -> [Transaction] -> String
 parseArgs _ [] = const "err"
 parseArgs day (x:xs) = fromMaybe (parseArgs day []) . join $ lookup x
-  [ ("bin", do
-            times <- headMay xs        >>= readMay
-            size  <- headMay (tail xs) >>= readMay
-            let accs = drop 2 xs
-            return $ toCsv
-                   . foldl1 (.) (replicate times $ bin size)
-                   . map (\(Transaction d _ [Split (Cent c) a])
-                          -> Transaction d "NA" [Split (Cent $ -c*size) a])
-                   . filterAccounts (map T.pack accs)
-                   . (\t -> getProfit t ++ t)
-                   . noFuture day
-                   . concatMap toSingleBook)
+  [ ("bin"      , do
+                  times <- headMay xs        >>= readMay
+                  size  <- headMay (tail xs) >>= readMay
+                  let accs = drop 2 xs
+                  return $ toCsv
+                         . foldl1 (.) (replicate times $ bin size)
+                         . map (\(Transaction d _ [Split (Cent c) a])
+                                -> Transaction d "NA" [Split (Cent $ negate c*size) a])
+                         . filterAccounts (map T.pack accs)
+                         . (\t -> getProfit t ++ t)
+                         . noFuture day
+                         . concatMap toSingleBook)
   , ("integrate", return $ toCsv
                          . map (\(Transaction d _ [Split (Cent c) a])
                                   -> Transaction d "NA" [Split (Cent $ negate c) a])
@@ -84,7 +84,49 @@ parseArgs day (x:xs) = fromMaybe (parseArgs day []) . join $ lookup x
                          . filterAccounts (map T.pack xs)
                          . (\t -> getProfit t ++ t)
                          . noFuture day
-                         . concatMap toSingleBook)]
+                         . concatMap toSingleBook)
+  , ("active"   , return $ toCsv
+                         . noFuture day
+                         . integrate
+                         . (\t -> getProfit t ++ t)
+                         . activeAccounts
+                         . filterAccounts ["INCOME"]
+                         . concatMap toSingleBook)
+  , ("density"  , return $ toCsv
+                         . density day
+                         . filterAccounts ["INCOME"]
+                         . concatMap toSingleBook)
+  , ("age"      , return $ toCsv
+                         . noFuture day
+                         . meanAge day
+                         . filterAccounts ["INCOME"]
+                         . concatMap toSingleBook)
+  ]
+
+activeAccounts :: [Transaction] -> [Transaction]
+activeAccounts ts = concatMap go $ groupBy ((==) `on` getAccount . head . getSplits)
+                    $ sortOn (getAccount . head . getSplits &&& getDay) ts
+  where go ts' = Transaction (getDay $ head ts')
+                             "NA" [Split (Cent 100) (Account "NA" Income Nothing)]
+                 : [Transaction (getDay $ last ts')
+                                "NA" [Split (Cent $ negate 100) (Account "NA" Expense Nothing)]]
+
+meanAge :: Day -> [Transaction] -> [Transaction]
+meanAge d ts = zipWith foo [1..] $ integrate $ sortOn getDay $ concatMap go $ groupBy ((==) `on` getAccount . head . getSplits)
+                                 $ sortOn (getAccount . head . getSplits &&& getDay) ts
+  where go ts' = [Transaction
+                    (getDay $ last ts')
+                    "NA" [Split (Cent $ (100 * diffDays (min d . getDay $ last ts') (getDay $ head ts')) `div` 31)
+                  (Account "NA" Expense Nothing)]]
+        foo i (Transaction ds n ((Split (Cent c) a):_)) = Transaction ds n [Split (Cent (c`div`i)) a]
+
+density :: Day -> [Transaction] -> [Transaction]
+density d ts = concatMap go $ groupBy ((==) `on` getAccount . head . getSplits)
+                            $ sortOn (getAccount . head . getSplits &&& getDay) ts
+  where go ts' = [Transaction (addDays (diffDays (min d . getDay $ last ts') (getDay $ head ts')) $ fromGregorian 0 0 0)
+                              "NA" [Split (Cent 100) (Account "NA" (if d < getDay (last ts')
+                                                                       then Income
+                                                                       else Expense) Nothing)]]
 
 output :: ([Transaction] -> String) -> Cursor -> String
 output fun cursor = fun  $ getTransactions cursor (getAccounts cursor)
