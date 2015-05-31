@@ -2,10 +2,12 @@
 
 module Main where
 
+import           Control.Applicative
 import           Control.Arrow
 import           Control.Monad
 import           Data.Function
 import           Data.List
+import           Data.List.Extra
 import qualified Data.Map                  as M
 import           Data.Maybe
 import           Data.Monoid
@@ -101,6 +103,11 @@ parseArgs day (x:xs) = fromMaybe (parseArgs day []) . join $ lookup x
                          . meanAge day
                          . filterAccounts ["INCOME"]
                          . concatMap toSingleBook)
+  , ("age2"      , return $ toCsv
+--                          . noFuture day
+                          . meanAge' day
+                          . filterAccounts ["INCOME"]
+                          . concatMap toSingleBook)
   ]
 
 activeAccounts :: [Transaction] -> [Transaction]
@@ -112,13 +119,24 @@ activeAccounts ts = concatMap go $ groupBy ((==) `on` getAccount . head . getSpl
                                 "NA" [Split (Cent $ negate 100) (Account "NA" Expense Nothing)]]
 
 meanAge :: Day -> [Transaction] -> [Transaction]
-meanAge d ts = zipWith foo [1..] $ integrate $ sortOn getDay $ concatMap go $ groupBy ((==) `on` getAccount . head . getSplits)
+meanAge d ts = zipWith foo [1..] $ integrate $ sortOn getDay $ map go $ groupBy ((==) `on` getAccount . head . getSplits)
                                  $ sortOn (getAccount . head . getSplits &&& getDay) ts
-  where go ts' = [Transaction
-                    (getDay $ last ts')
-                    "NA" [Split (Cent $ (100 * diffDays (min d . getDay $ last ts') (getDay $ head ts')) `div` 31)
-                  (Account "NA" Expense Nothing)]]
-        foo i (Transaction ds n ((Split (Cent c) a):_)) = Transaction ds n [Split (Cent (c`div`i)) a]
+  where go ts' = Transaction
+                   (getDay $ last ts')
+                   "NA" [Split (Cent $ 100 * diffDays (min d . getDay $ last ts') (getDay $ head ts'))
+                 (Account "NA" Expense Nothing)]
+        foo i (Transaction ds n (Split (Cent c) a:_)) = Transaction ds n [Split (Cent (c`div`i)) a]
+
+meanAge' :: Day -> [Transaction] -> [Transaction]
+meanAge' d ts =  zap $ groupBy ((==) `on` getAccount . head . getSplits)
+                     $ sortOn (getAccount . head . getSplits &&& getDay) ts
+  where go n ts' = Transaction
+                     n
+                     "NA" [Split (Cent $ 100 * diffDays (min n . getDay $ last ts') (getDay $ head ts'))
+                   (Account "NA" Expense Nothing)]
+        foo i (Transaction ds n (Split (Cent c) a:_)) = Transaction ds n [Split (Cent (c`div`i)) a]
+        zap xs = [foo (fromIntegral $ length res) . last . integrate $ sortOn getDay res | f <- [firstDay..d], let res = filter ((\(Cent c) -> c > 0) . getCent . head . getSplits) $ map (go f) xs, not $ null res]
+        firstDay = getDay . head $ sortOn getDay ts
 
 density :: Day -> [Transaction] -> [Transaction]
 density d ts = concatMap go $ groupBy ((==) `on` getAccount . head . getSplits)
