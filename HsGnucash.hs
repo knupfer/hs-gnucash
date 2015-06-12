@@ -2,18 +2,15 @@
 
 module Main where
 
-import           Control.Applicative
 import           Control.Arrow
 import           Control.Monad
 import           Data.Function
 import           Data.List
-import           Data.List.Extra
 import qualified Data.Map                  as M
 import           Data.Maybe
 import           Data.Monoid
 import qualified Data.Text                 as T
 import           Data.Time
-import           Filesystem.Path.CurrentOS (decodeString)
 import           Safe
 import           System.Environment
 import           Text.XML                  hiding (readFile)
@@ -61,7 +58,7 @@ main :: IO ()
 main = do
   file:args <- getArgs
   today     <- utctDay      <$> getCurrentTime
-  cursor    <- fromDocument <$> X.readFile def (decodeString file)
+  cursor    <- fromDocument <$> X.readFile def file
   putStr     $ output (parseArgs today args) cursor
 
 parseArgs :: Day -> [String] -> [Transaction] -> String
