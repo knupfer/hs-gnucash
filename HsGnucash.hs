@@ -6,15 +6,15 @@ import           Control.Arrow
 import           Control.Monad
 import           Data.Function
 import           Data.List
-import qualified Data.Map                  as M
+import qualified Data.Map           as M
 import           Data.Maybe
 import           Data.Monoid
-import qualified Data.Text                 as T
+import qualified Data.Text          as T
 import           Data.Time
 import           Safe
 import           System.Environment
-import           Text.XML                  hiding (readFile)
-import qualified Text.XML                  as X (readFile)
+import           Text.XML           hiding (readFile)
+import qualified Text.XML           as X (readFile)
 import           Text.XML.Cursor
 
 type AccountName = T.Text
