@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Main where
+module HsGnucash where
 
 import           Control.Arrow
 import           Control.Monad
@@ -12,9 +12,6 @@ import           Data.Monoid
 import qualified Data.Text          as T
 import           Data.Time
 import           Safe
-import           System.Environment
-import           Text.XML           hiding (readFile)
-import qualified Text.XML           as X (readFile)
 import           Text.XML.Cursor
 
 type AccountName = T.Text
@@ -54,59 +51,6 @@ data Transaction = Transaction { getDay             :: Day
                                , getSplits          :: [Split]
                                } deriving (Eq, Show)
 
-main :: IO ()
-main = do
-  file:args <- getArgs
-  today     <- utctDay      <$> getCurrentTime
-  cursor    <- fromDocument <$> X.readFile def file
-  putStr     $ output (parseArgs today args) cursor
-
-parseArgs :: Day -> [String] -> [Transaction] -> String
-parseArgs _ [] = const "err"
-parseArgs day (x:xs) = fromMaybe (parseArgs day []) . join $ lookup x
-  [ ("bin"      , do
-                  times <- headMay xs        >>= readMay
-                  size  <- headMay (tail xs) >>= readMay
-                  let accs = drop 2 xs
-                  return $ toCsv
-                         . foldl1 (.) (replicate times $ bin size)
-                         . map (\(Transaction d _ [Split (Cent c) a])
-                                -> Transaction d "NA" [Split (Cent $ negate c*size) a])
-                         . filterAccounts (map T.pack accs)
-                         . (\t -> getProfit t ++ t)
-                         . noFuture day
-                         . concatMap toSingleBook)
-  , ("integrate", return $ toCsv
-                         . map (\(Transaction d _ [Split (Cent c) a])
-                                  -> Transaction d "NA" [Split (Cent $ negate c) a])
-                         . integrate
-                         . filterAccounts (map T.pack xs)
-                         . (\t -> getProfit t ++ t)
-                         . noFuture day
-                         . concatMap toSingleBook)
-  , ("active"   , return $ toCsv
-                         . noFuture day
-                         . integrate
-                         . (\t -> getProfit t ++ t)
-                         . activeAccounts
-                         . filterAccounts ["INCOME"]
-                         . concatMap toSingleBook)
-  , ("density"  , return $ toCsv
-                         . density day
-                         . filterAccounts ["INCOME"]
-                         . concatMap toSingleBook)
-  , ("age"      , return $ toCsv
-                         . noFuture day
-                         . meanAge day
-                         . filterAccounts ["INCOME"]
-                         . concatMap toSingleBook)
-  , ("age2"      , return $ toCsv
---                          . noFuture day
-                          . meanAge' day
-                          . filterAccounts ["INCOME"]
-                          . concatMap toSingleBook)
-  ]
-
 activeAccounts :: [Transaction] -> [Transaction]
 activeAccounts ts = concatMap go $ groupBy ((==) `on` getAccount . head . getSplits)
                     $ sortOn (getAccount . head . getSplits &&& getDay) ts
@@ -143,8 +87,8 @@ density d ts = concatMap go $ groupBy ((==) `on` getAccount . head . getSplits)
                                                                        then Income
                                                                        else Expense) Nothing)]]
 
-output :: ([Transaction] -> String) -> Cursor -> String
-output fun cursor = fun  $ getTransactions cursor (getAccounts cursor)
+output' :: ([Transaction] -> T.Text) -> Cursor -> T.Text
+output' fun cursor = fun  $ getTransactions cursor (getAccounts cursor)
 
 integrate :: [Transaction] -> [Transaction]
 integrate xs = concatMap go $ groupBy ((==) `on` theirType) sortedTrans
@@ -159,22 +103,22 @@ noFuture d = filter ((>=) d . getDay)
 getProfit :: [Transaction] -> [Transaction]
 getProfit ts = map (\(Transaction d _ [Split c _])
                     -> Transaction d "NA" [Split c (Account "NA" Profit Nothing)])
-             . filterAccounts ["INCOME","EXPENSE"]
+             . filterAccounts [Income,Expense]
              $ concatMap toSingleBook ts
 
 toSingleBook :: Transaction -> [Transaction]
 toSingleBook (Transaction day n ss) = map (Transaction day n . flip (:) []) ss
 
-toCsv :: [Transaction] -> String
-toCsv = concatMap
-       (\(Transaction day n (s:ss)) -> unlines $ f n (show $ toFloatDate day) s
-       : map (f n "          ") ss)
-       where f n maybeDay x = intercalate "\t" [ maybeDay
-                                               , show (getCent x)
-                                               , T.unpack n
-                                               , show (getType $ getAccount x)
-                                               , T.unpack . getAccountName $ getAccount x
-                                               ]
+toCsv' :: [Transaction] -> T.Text
+toCsv' = T.concat . map
+        (\(Transaction day n (s:ss)) -> T.unlines $ f n (T.pack . show $ toFloatDate day) s
+        : map (f n "          ") ss)
+        where f n maybeDay x = T.intercalate "\t" [ maybeDay
+                                                  , T.pack $ show (getCent x)
+                                                  , n
+                                                  , T.pack $ show (getType $ getAccount x)
+                                                  , getAccountName $ getAccount x
+                                                  ]
 
 toFloatDate :: Day -> Double
 toFloatDate = f . toGregorian
@@ -210,14 +154,14 @@ bin' s (fDay, lDay) ts = Transaction fDay "NA"
   ]) : if fDay < lDay
           then bin' s (addDays 1 fDay, lDay) ts
           else []
-  where split = Split ( Cent . flip div (minimum [s, 1+diffDays lDay fDay]) . sum
-                      . mapMaybe (fmap ((\(Cent x) -> x) . getCent) . headMay . getSplits)
+  where split = Split ( Cent . flip div (min s (1+diffDays lDay fDay))
+                      . foldl (\acc i -> maybe acc ((\(Cent x) -> x + acc) . getCent) $ headMay $ getSplits i) 0
                       . takeWhile ((>) (addDays s fDay) . getDay)
                       $ dropWhile ((>) fDay . getDay) ts
                       )
 
-filterAccounts :: [T.Text] -> [Transaction] -> [Transaction]
-filterAccounts xs = filter $ any ( flip elem (map toAccountType xs)
+filterAccounts :: [AccountType] -> [Transaction] -> [Transaction]
+filterAccounts xs = filter $ any ( flip elem xs
                                  . getType
                                  . getAccount
                                  ) . getSplits
@@ -236,7 +180,7 @@ toAccountType b = case b of
 
 getAccounts :: Cursor -> AccountM
 getAccounts c = ((\x -> M.map (f x) x) . M.fromList) $
-                filter (not . T.null .fst) $ c $// laxElement "account" >=> parseAccount
+                filter (not . T.null .fst) $ c $/ child >=> laxElement "account" >=> parseAccount
   where f ls (x,y,z) = Account x y $ do
                          (x',y',z') <- M.lookup z ls
                          return $ f ls (x',y',z')
@@ -250,7 +194,7 @@ parseAccount c' = [(id' , (name', type', parent'))]
         parent' = get "parent"
 
 getTransactions :: Cursor -> AccountM -> [Transaction]
-getTransactions c accounts = c $// laxElement "transaction" >=> parseTransaction accounts
+getTransactions c accounts = c $/ child >=> laxElement "transaction" >=> parseTransaction accounts
 
 parseTransaction :: AccountM -> Cursor -> [Transaction]
 parseTransaction accounts c = catMaybes [do a <- headMay . reads $ T.unpack date
