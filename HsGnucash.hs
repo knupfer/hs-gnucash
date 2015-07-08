@@ -87,8 +87,8 @@ density d ts = concatMap go $ groupBy ((==) `on` getAccount . head . getSplits)
                                                                        then Income
                                                                        else Expense) Nothing)]]
 
-output' :: ([Transaction] -> T.Text) -> Cursor -> T.Text
-output' fun cursor = fun  $ getTransactions cursor (getAccounts cursor)
+output :: ([Transaction] -> T.Text) -> Cursor -> T.Text
+output fun cursor = fun  $ getTransactions cursor (getAccounts cursor)
 
 integrate :: [Transaction] -> [Transaction]
 integrate xs = concatMap go $ groupBy ((==) `on` theirType) sortedTrans
@@ -109,16 +109,16 @@ getProfit ts = map (\(Transaction d _ [Split c _])
 toSingleBook :: Transaction -> [Transaction]
 toSingleBook (Transaction day n ss) = map (Transaction day n . flip (:) []) ss
 
-toCsv' :: [Transaction] -> T.Text
-toCsv' = T.concat . map
-        (\(Transaction day n (s:ss)) -> T.unlines $ f n (T.pack . show $ toFloatDate day) s
-        : map (f n "          ") ss)
-        where f n maybeDay x = T.intercalate "\t" [ maybeDay
-                                                  , T.pack $ show (getCent x)
-                                                  , n
-                                                  , T.pack $ show (getType $ getAccount x)
-                                                  , getAccountName $ getAccount x
-                                                  ]
+toCsv :: [Transaction] -> T.Text
+toCsv = T.concat . map
+       (\(Transaction day n (s:ss)) -> T.unlines $ f n (T.pack . show $ toFloatDate day) s
+       : map (f n "          ") ss)
+       where f n maybeDay x = T.intercalate "\t" [ maybeDay
+                                                 , T.pack $ show (getCent x)
+                                                 , n
+                                                 , T.pack $ show (getType $ getAccount x)
+                                                 , getAccountName $ getAccount x
+                                                 ]
 
 toFloatDate :: Day -> Double
 toFloatDate = f . toGregorian
