@@ -6,10 +6,10 @@ import           Control.Arrow
 import           Control.Monad
 import           Data.Function
 import           Data.List
-import qualified Data.Map           as M
+import qualified Data.Map        as M
 import           Data.Maybe
 import           Data.Monoid
-import qualified Data.Text          as T
+import qualified Data.Text       as T
 import           Data.Time
 import           Safe
 import           Text.XML.Cursor
@@ -60,49 +60,64 @@ activeAccounts ts = concatMap go $ groupBy ((==) `on` getAccount . head . getSpl
                                 "NA" [Split (Cent $ negate 100) (Account "NA" Expense Nothing)]]
 
 meanAge :: Day -> [Transaction] -> [Transaction]
-meanAge d ts = zipWith foo [1..] $ integrate $ sortOn getDay $ map go $ groupBy ((==) `on` getAccount . head . getSplits)
-                                 $ sortOn (getAccount . head . getSplits &&& getDay) ts
+meanAge d ts = zipWith foo [1..]
+               . integrate
+               . sortOn getDay
+               . map go
+               . groupBy ((==) `on` getAccount . head . getSplits)
+               $ sortOn (getAccount . head . getSplits &&& getDay) ts
   where go ts' = Transaction
                    (getDay $ last ts')
-                   "NA" [Split (Cent $ 100 * diffDays (min d . getDay $ last ts') (getDay $ head ts'))
+                   "NA" [Split (Cent $ 100 * diffDays (min d . getDay $ last ts')
+                                                       (getDay $ head ts'))
                  (Account "NA" Expense Nothing)]
         foo i (Transaction ds n (Split (Cent c) a:_)) = Transaction ds n [Split (Cent (c`div`i)) a]
 
 meanAge' :: Day -> [Transaction] -> [Transaction]
 meanAge' d ts =  zap $ groupBy ((==) `on` getAccount . head . getSplits)
                      $ sortOn (getAccount . head . getSplits &&& getDay) ts
-  where go n ts' = Transaction
-                     n
-                     "NA" [Split (Cent $ 100 * diffDays (min n . getDay $ last ts') (getDay $ head ts'))
+  where go n ts' = Transaction n
+                               "NA" [Split (Cent $ 100 * diffDays
+                                               (min n . getDay $ last ts')
+                                               (getDay $ head ts'))
                    (Account "NA" Expense Nothing)]
         foo i (Transaction ds n (Split (Cent c) a:_)) = Transaction ds n [Split (Cent (c`div`i)) a]
-        zap xs = [foo (fromIntegral $ length res) . last . integrate $ sortOn getDay res | f <- [firstDay..d], let res = filter ((\(Cent c) -> c > 0) . getCent . head . getSplits) $ map (go f) xs, not $ null res]
+        zap xs = [foo (fromIntegral $ length res) . last . integrate $ sortOn getDay res
+                 | f <- [firstDay..d], let res = filter ((\(Cent c) -> c > 0) . getCent . head . getSplits)
+                                                 $ map (go f) xs, not $ null res
+                 ]
         firstDay = getDay . head $ sortOn getDay ts
 
 density :: Day -> [Transaction] -> [Transaction]
 density d ts = concatMap go $ groupBy ((==) `on` getAccount . head . getSplits)
                             $ sortOn (getAccount . head . getSplits &&& getDay) ts
-  where go ts' = [Transaction (addDays (diffDays (min d . getDay $ last ts') (getDay $ head ts')) $ fromGregorian 0 0 0)
-                              "NA" [Split (Cent 100) (Account "NA" (if d < getDay (last ts')
-                                                                       then Income
-                                                                       else Expense) Nothing)]]
+  where go ts' = [Transaction
+                    (addDays (diffDays (min d . getDay $ last ts')
+                                       (getDay $ head ts'))
+                     $ fromGregorian 0 0 0)
+                    "NA" [Split (Cent 100)
+                                (Account "NA"
+                                         (if d < getDay (last ts')
+                                                      then Income
+                                                      else Expense) Nothing)]]
 
 output :: ([Transaction] -> T.Text) -> Cursor -> T.Text
 output fun cursor = fun  $ getTransactions cursor (getAccounts cursor)
 
 integrate :: [Transaction] -> [Transaction]
 integrate xs = concatMap go $ groupBy ((==) `on` theirType) sortedTrans
-  where sortedTrans   = sortOn (theirType &&& getDay) $ concatMap toSingleBook xs
-        go ys  = scanl1 mup ys :: [Transaction]
-        mup (Transaction _ _ (Split (Cent c) _ :_)) (Transaction d n (Split (Cent c') a:_)) =
-             Transaction d n [Split (Cent $ c + c') a]
+  where sortedTrans = sortOn (theirType &&& getDay) $ concatMap toSingleBook xs
+        go ys = scanl1 mup ys :: [Transaction]
+        mup (Transaction _ _ (Split (Cent c) _ :_))
+            (Transaction d n (Split (Cent c') a:_))
+          = Transaction d n [Split (Cent $ c + c') a]
 
 noFuture :: Day -> [Transaction] -> [Transaction]
 noFuture d = filter ((>=) d . getDay)
 
 getProfit :: [Transaction] -> [Transaction]
-getProfit ts = map (\(Transaction d _ [Split c _])
-                    -> Transaction d "NA" [Split c (Account "NA" Profit Nothing)])
+getProfit ts = map (\(Transaction d _ [Split c _]) ->
+                    Transaction d "NA" [Split c (Account "NA" Profit Nothing)])
              . filterAccounts [Income,Expense]
              $ concatMap toSingleBook ts
 
@@ -111,14 +126,16 @@ toSingleBook (Transaction day n ss) = map (Transaction day n . flip (:) []) ss
 
 toCsv :: [Transaction] -> T.Text
 toCsv = T.concat . map
-       (\(Transaction day n (s:ss)) -> T.unlines $ f n (T.pack . show $ toFloatDate day) s
-       : map (f n "          ") ss)
-       where f n maybeDay x = T.intercalate "\t" [ maybeDay
-                                                 , T.pack $ show (getCent x)
-                                                 , n
-                                                 , T.pack $ show (getType $ getAccount x)
-                                                 , getAccountName $ getAccount x
-                                                 ]
+       (\(Transaction day n (s:ss)) -> T.unlines $ f n
+                                       (T.pack . show $ toFloatDate day) s
+                                       : map (f n "          ") ss)
+       where f n maybeDay x = T.intercalate "\t"
+                                [ maybeDay
+                                , T.pack $ show (getCent x)
+                                , n
+                                , T.pack $ show (getType $ getAccount x)
+                                , getAccountName $ getAccount x
+                                ]
 
 toFloatDate :: Day -> Double
 toFloatDate = f . toGregorian
@@ -132,7 +149,8 @@ toLedger (Transaction d n ss) = T.unlines $
          [T.pack (show d) <> " " <> n] <> map printSplit ss <> [""]
   where getAH x = getAccountName x : maybe [] getAH (getParent x)
         printSplit (Split x y) = let t = "  " <> T.intercalate ":" (getAH y) <> "  "
-                                 in T.justifyLeft (80 - length (show x)) ' ' t <> T.pack (show x)
+                                 in T.justifyLeft (80 - length (show x)) ' ' t
+                                    <> T.pack (show x)
 
 bin :: Integer -> [Transaction] -> [Transaction]
 bin s trans = concat $ mapMaybe (\x -> do
@@ -140,7 +158,8 @@ bin s trans = concat $ mapMaybe (\x -> do
   h <- boundaryDay headMay x
   return . filter ((>) l . addDays (s `div` 4) . getDay) $ bin' s (h, l) x)
     $ groupBy ((==) `on` theirType) sortedTrans
-  where sortedTrans   = sortOn (theirType &&& getDay) $ concatMap toSingleBook trans
+  where sortedTrans   = sortOn (theirType &&& getDay)
+                        $ concatMap toSingleBook trans
         boundaryDay f = fmap getDay .  f . sortOn getDay
 
 theirType :: Transaction -> Maybe AccountType
@@ -162,8 +181,8 @@ bin' s (fDay, lDay) ts = Transaction fDay "NA"
 
 filterAccounts :: [AccountType] -> [Transaction] -> [Transaction]
 filterAccounts xs = filter $ any ( flip elem xs
-                                 . getType
-                                 . getAccount
+                                   . getType
+                                   . getAccount
                                  ) . getSplits
 
 toAccountType :: T.Text -> AccountType
@@ -180,7 +199,8 @@ toAccountType b = case b of
 
 getAccounts :: Cursor -> AccountM
 getAccounts c = ((\x -> M.map (f x) x) . M.fromList) $
-                filter (not . T.null .fst) $ c $/ child >=> laxElement "account" >=> parseAccount
+                filter (not . T.null .fst) $ c $/ child >=> laxElement "account"
+                                                        >=> parseAccount
   where f ls (x,y,z) = Account x y $ do
                          (x',y',z') <- M.lookup z ls
                          return $ f ls (x',y',z')
@@ -194,7 +214,8 @@ parseAccount c' = [(id' , (name', type', parent'))]
         parent' = get "parent"
 
 getTransactions :: Cursor -> AccountM -> [Transaction]
-getTransactions c accounts = c $/ child >=> laxElement "transaction" >=> parseTransaction accounts
+getTransactions c accounts = c $/ child >=> laxElement "transaction"
+                                        >=> parseTransaction accounts
 
 parseTransaction :: AccountM -> Cursor -> [Transaction]
 parseTransaction accounts c = catMaybes [do a <- headMay . reads $ T.unpack date
