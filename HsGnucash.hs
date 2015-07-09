@@ -56,14 +56,11 @@ data Transaction = Transaction { getDay             :: Day
 sort' :: [Transaction] -> [Transaction]
 sort' = sortOn (getAccount . head . getSplits &&& getDay)
 
-activeAccounts :: [Transaction] -> [Transaction]
-activeAccounts ts = concatMap go
+activeAccounts :: [Transaction] -> [(Day,Day)]
+activeAccounts ts = map go
                     . groupBy ((==) `on` getAccount . head . getSplits)
                     $ sort' ts
-  where go ts' = Transaction (getDay $ head ts')
-                 "NA" [Split (Cent 100) (Account "NA" Income Nothing)]
-                 : [Transaction (getDay $ last ts')
-                                "NA" [Split (Cent $ negate 100) (Account "NA" Expense Nothing)]]
+  where go = getDay . head &&& getDay . last
 
 meanAge :: Day -> [Transaction] -> [Transaction]
 meanAge d ts = zipWith foo [1..]
