@@ -127,7 +127,7 @@ toSingleBook (Transaction day n ss) = map (Transaction day n . flip (:) []) ss
 toCsv :: [Transaction] -> T.Text
 toCsv = T.concat . map
        (\(Transaction day n (s:ss)) -> T.unlines $ f n
-                                       (T.pack . show $ toFloatDate day) s
+                                       (T.pack . show $ day) s
                                        : map (f n "          ") ss)
        where f n maybeDay x = T.intercalate "\t"
                                 [ maybeDay
@@ -136,13 +136,6 @@ toCsv = T.concat . map
                                 , T.pack $ show (getType $ getAccount x)
                                 , getAccountName $ getAccount x
                                 ]
-
-toFloatDate :: Day -> Double
-toFloatDate = f . toGregorian
-  where f (y, m, d) = fromIntegral y
-                      + ( fromIntegral (m-1)
-                        + fromIntegral (d-1) / 31
-                        ) / 12
 
 toLedger :: Transaction -> T.Text
 toLedger (Transaction d n ss) = T.unlines $
